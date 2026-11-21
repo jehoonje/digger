@@ -117,14 +117,83 @@ JSON만 답하세요:
   throw new Error("No available Gemini model: " + lastErr);
 }
 
-// 4단계: YouTube에서 재생 가능한 영상 찾기
-export async function searchYouTube(q) {
+// 4단계: 영상 검색 — 저장된 결과(Supabase) → YouTube 공식 API → 한도 초과 시 DataForSEO
+const SB_URL = () => (process.env.SUPABASE_URL || "").replace(/\/$/, "");
+const SB_KEY = () => process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
+const CACHE_DAYS = 30;
+const normQ = q => String(q).toLowerCase().replace(/\s+/g, " ").trim();
+
+async function cacheGet(q) {
+  if (!SB_URL() || !SB_KEY()) return null;
+  try {
+    const since = new Date(Date.now() - CACHE_DAYS * 864e5).toISOString();
+    const r = await fetch(`${SB_URL()}/rest/v1/yt_cache?select=videos&q=eq.${encodeURIComponent(q)}&created_at=gte.${since}&limit=1`, {
+      headers: { apikey: SB_KEY(), authorization: "Bearer " + SB_KEY() }
+    });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    return rows[0]?.videos?.length ? rows[0].videos : null;
+  } catch { return null; }
+}
+
+async function cacheSet(q, videos, source) {
+  if (!SB_URL() || !SB_KEY() || !videos.length) return;
+  try {
+    await fetch(`${SB_URL()}/rest/v1/yt_cache?on_conflict=q`, {
+      method: "POST",
+      headers: { apikey: SB_KEY(), authorization: "Bearer " + SB_KEY(), "content-type": "application/json",
+        prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ q, videos, source, created_at: new Date().toISOString() })
+    });
+  } catch {}
+}
+
+async function youtubeOfficial(q) {
   const key = YOUTUBE_KEY();
-  if (!key) throw new Error("YOUTUBE_API_KEY is not set.");
+  if (!key) throw Object.assign(new Error("YOUTUBE_API_KEY is not set."), { fallback: true });
   const u = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=5&regionCode=KR&q="
     + encodeURIComponent(q) + "&key=" + encodeURIComponent(key);
   const r = await fetch(u);
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error("YouTube error: " + (j.error?.message || r.status));
+  if (!r.ok) {
+    const reason = j.error?.errors?.[0]?.reason || "";
+    throw Object.assign(new Error("YouTube error: " + (j.error?.message || r.status)),
+      { fallback: r.status === 403 || r.status === 429 || /quota|rateLimit/i.test(reason) });
+  }
   return (j.items || []).map(i => ({ id: i.id.videoId, title: stripTags(i.snippet.title), channel: stripTags(i.snippet.channelTitle) }));
+}
+
+async function youtubeDataForSEO(q) {
+  const login = process.env.DATAFORSEO_LOGIN, pass = process.env.DATAFORSEO_PASSWORD;
+  if (!login || !pass) throw new Error("Daily YouTube search limit reached.");
+  const r = await fetch("https://api.dataforseo.com/v3/serp/youtube/organic/live/advanced", {
+    method: "POST",
+    headers: { authorization: "Basic " + Buffer.from(login + ":" + pass).toString("base64"), "content-type": "application/json" },
+    body: JSON.stringify([{ keyword: q, location_name: "South Korea", language_code: "ko", device: "desktop", block_depth: 20 }])
+  });
+  const j = await r.json().catch(() => ({}));
+  const task = j.tasks?.[0];
+  if (!r.ok || (task && task.status_code >= 40000)) throw new Error("Backup search error: " + (task?.status_message || j.status_message || r.status));
+  const items = (task?.result || []).flatMap(res => res.items || []);
+  const idFrom = it => it.video_id || (String(it.url || "").match(/[?&]v=([\w-]{11})/) || [])[1];
+  return items
+    .filter(it => it.type === "youtube_video" && !it.is_shorts && idFrom(it))
+    .slice(0, 5)
+    .map(it => ({ id: idFrom(it), title: stripTags(it.title), channel: stripTags(it.channel_name || it.channel_title || "") }));
+}
+
+export async function searchYouTube(rawQ) {
+  const q = normQ(rawQ);
+  const cached = await cacheGet(q);
+  if (cached) return cached;
+  let videos, source = "youtube";
+  try {
+    videos = await youtubeOfficial(q);
+  } catch (e) {
+    if (!e.fallback) throw e;
+    videos = await youtubeDataForSEO(q);
+    source = "dataforseo";
+  }
+  await cacheSet(q, videos, source);
+  return videos;
 }

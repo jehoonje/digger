@@ -16,6 +16,8 @@ LP 표지를 찍거나 올리면 구글 이미지 웹 검색 결과를 다수결
 | `GOOGLE_VISION_API_KEY` | 권장* | Cloud Vision API를 켠 프로젝트의 키. 없으면 표지 판독만 사용 |
 | `ACCESS_CODE` | 권장 | 정하면 이 코드를 아는 사람만 사용 가능 (무료 한도 보호) |
 | `GEMINI_MODEL` | 아니요 | 기본값 `gemini-3.5-flash-lite` |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | 권장 | 영상 검색 결과 30일 저장(같은 검색은 한도 안 씀). 테이블은 `supabase.sql` |
+| `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD` | 아니요 | 유튜브 하루 한도 초과 시 유료 백업 검색(1,000건당 약 2달러) |
 
 \* 세 API를 Gemini 키와 같은 Google Cloud 프로젝트에서 켜면 `GEMINI_API_KEY` 하나로 대신할 수 있습니다.
 
