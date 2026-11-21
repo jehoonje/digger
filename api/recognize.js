@@ -1,4 +1,4 @@
-import { checkAccess, webDetect, vote, resolveAlbum, searchYouTube } from "./_lib.js";
+import { checkAccess, webDetect, vote, resolveAlbum, searchYouTube, hasSecondCode } from "./_lib.js";
 
 export const config = { maxDuration: 30 };
 
@@ -16,8 +16,9 @@ export default async function handler(req, res) {
     if (!album?.artist) return res.json({ found: false, votes, web: detect.ok });
 
     const q = album.artist + " " + (album.top_track || album.album);
-    const videos = await searchYouTube(q).catch(() => []);
-    res.json({ found: true, album, videos, votes: votes.slice(0, 5), web: detect.ok, webReason: detect.ok ? undefined : detect.reason });
+    let needSecond = false;
+    const videos = await searchYouTube(q, { second: hasSecondCode(req) }).catch(e => { if (e.secondCode) needSecond = true; return []; });
+    res.json({ found: true, needSecond, album, videos, votes: votes.slice(0, 5), web: detect.ok, webReason: detect.ok ? undefined : detect.reason });
   } catch (e) {
     res.status(500).json({ error: e.message || "Unknown error" });
   }

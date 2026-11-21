@@ -187,18 +187,52 @@ async function youtubeDataForSEO(q) {
     .map(it => ({ id: idFrom(it), title: stripTags(it.title), channel: stripTags(it.channel_name || it.channel_title || "") }));
 }
 
-export async function searchYouTube(rawQ) {
+// 하루 실시간 검색 수(KST 기준). 한도를 넘으면 두 번째 접속 코드가 있어야 검색
+const DAILY_FREE = () => Number(process.env.DAILY_SEARCH_LIMIT || 100);
+const kstDay = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+
+async function usageGet() {
+  if (!SB_URL() || !SB_KEY()) return 0;
+  try {
+    const r = await fetch(`${SB_URL()}/rest/v1/search_usage?select=searches&day=eq.${kstDay()}`, { headers: sbHeaders() });
+    const rows = r.ok ? await r.json() : [];
+    return rows[0]?.searches || 0;
+  } catch { return 0; }
+}
+async function usageBump() {
+  if (!SB_URL() || !SB_KEY()) return;
+  try {
+    await fetch(`${SB_URL()}/rest/v1/rpc/bump_search`, {
+      method: "POST", headers: { ...sbHeaders(), "content-type": "application/json" },
+      body: JSON.stringify({ p_day: kstDay() })
+    });
+  } catch {}
+}
+
+export function hasSecondCode(req) {
+  const code = process.env.SECOND_ACCESS_CODE;
+  return !!code && req.headers["x-second-code"] === code;
+}
+const secondCodeError = () => Object.assign(new Error("Daily search limit reached. Enter the second access code to continue."), { secondCode: true });
+
+export async function searchYouTube(rawQ, { second = false } = {}) {
   const q = normQ(rawQ);
   const cached = await cacheGet(q);
   if (cached) return cached;
+
+  const gate = !!process.env.SECOND_ACCESS_CODE;
+  if (gate && !second && (await usageGet()) >= DAILY_FREE()) throw secondCodeError();
+
   let videos, source = "youtube";
   try {
     videos = await youtubeOfficial(q);
   } catch (e) {
     if (!e.fallback) throw e;
+    if (gate && !second) throw secondCodeError(); // 유료 백업 검색은 두 번째 코드가 있을 때만
     videos = await youtubeDataForSEO(q);
     source = "dataforseo";
   }
+  await usageBump();
   await cacheSet(q, videos, source);
   return videos;
 }

@@ -18,6 +18,7 @@ LP 표지를 찍거나 올리면 구글 이미지 웹 검색 결과를 다수결
 | `GEMINI_MODEL` | 아니요 | 기본값 `gemini-3.5-flash-lite` |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | 권장 | 영상 검색 결과 30일 저장(같은 검색은 한도 안 씀). 테이블은 `supabase.sql` |
 | `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD` | 아니요 | 유튜브 하루 한도 초과 시 유료 백업 검색(1,000건당 약 2달러) |
+| `SECOND_ACCESS_CODE` | 아니요 | 정하면 하루 실시간 검색이 100건(`DAILY_SEARCH_LIMIT`)을 넘거나 유료 백업으로 넘어갈 때 이 코드가 있어야 계속 검색 |
 
 \* 세 API를 Gemini 키와 같은 Google Cloud 프로젝트에서 켜면 `GEMINI_API_KEY` 하나로 대신할 수 있습니다.
 

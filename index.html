@@ -48,6 +48,10 @@ button,input{font:inherit;color:inherit}
 .busy .actions{opacity:.4;pointer-events:none}
 .status{margin:-16px 0 0;color:var(--muted);font-size:13px;min-height:1.5em}
 
+#secondForm{display:flex;flex-direction:column;gap:10px;padding:18px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+#secondForm p{margin:0;font-size:14px}
+#secondForm .row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end}
+#secondForm .primary{padding:12px 18px}
 #result{display:flex;flex-direction:column;gap:20px}
 .title{font-size:26px;font-weight:600;line-height:1.2;letter-spacing:-.015em;margin:0;text-wrap:balance}
 .meta{margin:6px 0 0;color:var(--muted);font-size:14px}
@@ -89,6 +93,15 @@ button,input{font:inherit;color:inherit}
     <input id="upload" type="file" accept="image/*" hidden>
     <p class="status" id="status" role="status">Photograph a record sleeve.</p>
 
+    <form id="secondForm" autocomplete="off" hidden>
+      <p>Today's search limit has been reached.</p>
+      <div class="row">
+        <input class="field" id="code2" type="password" placeholder="Second access code" aria-label="Second access code">
+        <button class="primary" id="enter2" type="submit">Continue</button>
+      </div>
+      <p class="msg" id="secondMsg" role="status"></p>
+    </form>
+
     <div id="result" hidden>
       <div>
         <h1 class="title" id="title"></h1>
@@ -110,9 +123,10 @@ const store = {
 let lastFile = null;
 
 async function api(path, opts = {}){
-  const r = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), "x-access-code": store.get("lp_code") } });
+  const r = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), "x-access-code": store.get("lp_code"), "x-second-code": store.get("lp_code2") } });
   const j = await r.json().catch(() => ({}));
   if (r.status === 401){ store.set("lp_code", ""); showGate(); throw new Error("Access code required."); }
+  if (r.status === 402 && j.code === "second_code_required"){ store.set("lp_code2", ""); throw Object.assign(new Error(j.error), { secondCode: true }); }
   if (!r.ok) throw new Error(j.error || "Server error (" + r.status + ")");
   return j;
 }
@@ -152,6 +166,37 @@ $("gateForm").onsubmit = async e => {
   if (saved && await verify(saved).catch(() => false)) enterMain();
 })();
 
+/* ---------- Second code ---------- */
+let pendingRetry = null;
+function askSecond(retry){
+  pendingRetry = retry;
+  $("secondForm").hidden = false;
+  $("secondMsg").textContent = "";
+  status("");
+  $("code2").focus();
+}
+$("secondForm").onsubmit = async e => {
+  e.preventDefault();
+  const code = $("code2").value.trim();
+  if (!code){ $("secondMsg").textContent = "Enter the second access code."; return; }
+  $("enter2").disabled = true;
+  try {
+    const r = await fetch("/api/auth?second=1", { headers: { "x-access-code": store.get("lp_code"), "x-second-code": code } });
+    if (!r.ok){ $("secondMsg").textContent = "Incorrect code."; return; }
+    store.set("lp_code2", code);
+    $("code2").value = ""; $("secondForm").hidden = true;
+    const retry = pendingRetry; pendingRetry = null;
+    if (retry) retry();
+  } catch { $("secondMsg").textContent = "Could not connect. Try again."; }
+  finally { $("enter2").disabled = false; }
+};
+
+async function searchAndPlay(q, label){
+  status("Searching…");
+  try { const v = await api("/api/youtube?q=" + encodeURIComponent(q)); showVideos(v.videos, label); status(""); }
+  catch (e){ if (e.secondCode) askSecond(() => searchAndPlay(q, label)); else status(e.message); }
+}
+
 /* ---------- Capture ---------- */
 function status(t){ $("status").textContent = t; }
 $("cam").onchange = handle;
@@ -183,6 +228,11 @@ async function recognize(file){
     const j = await api("/api/recognize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ image }) });
     if (!j.found){ status("No match. Try a clearer, closer photo of the sleeve."); return; }
     showAlbum(j.album);
+    if (j.needSecond){
+      const a = j.album, label = a.top_track || "Full album";
+      askSecond(() => searchAndPlay(a.artist + " " + (a.top_track || a.album), label));
+      return;
+    }
     showVideos(j.videos, j.album.top_track);
     status(j.videos?.length ? "" : "No video found. Pick a track below.");
   } catch (err){ status(err.message); }
@@ -202,11 +252,7 @@ function showAlbum(r){
       const a = document.createElement("span"); a.textContent = t.label;
       const p = document.createElement("span"); p.textContent = "Play";
       b.append(a, p);
-      b.onclick = async () => {
-        status("Searching…");
-        try { const v = await api("/api/youtube?q=" + encodeURIComponent(t.q)); showVideos(v.videos, t.label); status(""); }
-        catch (e){ status(e.message); }
-      };
+      b.onclick = () => searchAndPlay(t.q, t.label);
       li.append(b); ul.append(li);
     });
   $("result").hidden = false;
