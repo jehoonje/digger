@@ -47,12 +47,36 @@ button,input{font:inherit;color:inherit}
 .ghost{padding:13px;border:1px solid var(--line);background:transparent;border-radius:2px;cursor:pointer;text-align:center;font-weight:500}
 .ghost:hover{border-color:var(--fg)}
 .busy .actions{opacity:.4;pointer-events:none}
-.shot{display:flex;flex-direction:column;gap:8px;margin-top:-16px}
+/* Motion: one easing, short durations, opacity + small translate only */
+:root{--ease:cubic-bezier(.2,.7,.2,1)}
+.shot{display:grid;grid-template-rows:0fr;opacity:0;margin-top:-28px;transition:grid-template-rows .5s var(--ease),opacity .35s var(--ease),margin-top .5s var(--ease)}
+.shot.open{grid-template-rows:1fr;opacity:1;margin-top:-16px}
+.shot-inner{min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:8px}
+.shot .view{transform:scale(.97);transition:transform .6s var(--ease)}
+.shot.open .view{transform:none}
+.shot video{opacity:0;transition:opacity .5s var(--ease)}
+.shot video.on{opacity:1}
+.shot .flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
+.shot .flash.go{animation:flash .45s var(--ease)}
+@keyframes flash{0%{opacity:.75}100%{opacity:0}}
 .shot .view{position:relative;width:100%;height:0;padding-bottom:100%;background:#000;overflow:hidden;border-radius:2px}
-.shot .guide{position:absolute;left:50%;top:50%;width:90%;aspect-ratio:1;transform:translate(-50%,-50%);border:1px solid rgba(255,255,255,.6);border-radius:2px;pointer-events:none}
+.shot .guide{position:absolute;left:50%;top:50%;width:90%;aspect-ratio:1;transform:translate(-50%,-50%) scale(1.05);opacity:0;border:1px solid rgba(255,255,255,.6);border-radius:2px;pointer-events:none;transition:opacity .5s var(--ease) .25s,transform .7s var(--ease) .25s}
+.shot.open .guide{opacity:1;transform:translate(-50%,-50%) scale(1)}
 .shot .row{display:grid;grid-template-columns:1fr 2fr;gap:8px}
 .player .unmute{position:absolute;right:10px;bottom:10px;padding:8px 12px;border:0;border-radius:2px;background:rgba(0,0,0,.7);color:#fff;font:500 13px var(--font);cursor:pointer;z-index:2}
-.status{margin:-16px 0 0;color:var(--muted);font-size:13px;min-height:1.5em}
+.status{margin:-16px 0 0;color:var(--muted);font-size:13px;min-height:1.5em;transition:color .3s}
+.status.loading{color:var(--fg)}
+.status.loading::after{content:"";display:block;height:1px;margin-top:8px;background:var(--fg);animation:line 1.4s var(--ease) infinite}
+@keyframes line{0%{transform:scaleX(0);transform-origin:left}50%{transform:scaleX(1);transform-origin:left}50.01%{transform:scaleX(1);transform-origin:right}100%{transform:scaleX(0);transform-origin:right}}
+#result{transition:opacity .4s var(--ease)}
+#result.stale{opacity:.3}
+.rise{opacity:0;transform:translateY(10px);animation:rise .6s var(--ease) forwards;animation-delay:calc(var(--i,0) * 60ms)}
+@keyframes rise{to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){
+  .shot,.shot .view,.shot .guide,.shot video,#result{transition:none}
+  .rise{animation:none;opacity:1;transform:none}
+  .status.loading::after,.shot .flash.go{animation:none}
+}
 
 #secondForm{display:flex;flex-direction:column;gap:10px;padding:18px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 #secondForm p{margin:0;font-size:14px}
@@ -98,10 +122,12 @@ button,input{font:inherit;color:inherit}
     <input id="cam" type="file" accept="image/*" capture="environment" hidden>
     <input id="upload" type="file" accept="image/*" hidden>
     <div class="shot" id="shot" hidden>
-      <div class="view" id="shotView"><video id="video" playsinline muted autoplay></video><div class="guide"></div></div>
-      <div class="row">
-        <button class="ghost" id="shotCancel" type="button">Cancel</button>
-        <button class="primary" id="shotTake" type="button">Capture</button>
+      <div class="shot-inner">
+        <div class="view" id="shotView"><video id="video" playsinline muted autoplay></video><div class="guide"></div><div class="flash" id="flash"></div></div>
+        <div class="row">
+          <button class="ghost" id="shotCancel" type="button">Cancel</button>
+          <button class="primary" id="shotTake" type="button">Capture</button>
+        </div>
       </div>
     </div>
     <p class="status" id="status" role="status">Photograph a record sleeve.</p>
@@ -213,13 +239,17 @@ async function submitSecond(e){
 }
 
 async function searchAndPlay(q, label){
-  status("Searching…");
+  status("Searching", true);
   try { const v = await api("/api/youtube?q=" + encodeURIComponent(q)); hideSecond(); showVideos(v.videos, label); status(""); }
   catch (e){ if (e.secondCode) askSecond(() => searchAndPlay(q, label), e.message); else status(e.message); }
 }
 
 /* ---------- Capture ---------- */
-function status(t){ $("status").textContent = t; }
+function status(t, loading = false){
+  $("status").textContent = t;
+  $("status").classList.toggle("loading", loading);
+  $("result").classList.toggle("stale", loading && !$("result").hidden);
+}
 $("cam").onchange = handle;
 $("upload").onchange = handle;
 document.addEventListener("paste", e => { const f = [...(e.clipboardData?.files || [])][0]; if (f && !$("main").hidden) start(f); });
@@ -247,7 +277,7 @@ async function recognize(file){
 async function recognizeImage(image){
   hideSecond();
   $("main").classList.add("busy");
-  status("Searching…");
+  status("Searching", true);
   try {
     const j = await api("/api/recognize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ image }) });
     if (!j.found){ status("No match. Try a clearer, closer photo of the sleeve."); return; }
@@ -274,25 +304,41 @@ function freshVideo(){
   $("video").replaceWith(v);
   return v;
 }
+let shotToken = 0;
 async function openShot(){
   primePlayer();
+  if (shotStream) return;
   if (!navigator.mediaDevices?.getUserMedia){ $("cam").click(); return; } // 지원 안 되면 기본 카메라로
+  const token = ++shotToken;
   try {
     shotStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
-    $("shot").hidden = false;
+    if (token !== shotToken){ shotStream.getTracks().forEach(t => t.stop()); shotStream = null; return; }
+    const panel = $("shot");
+    panel.hidden = false;
+    void panel.offsetHeight;            // 펼쳐지는 전환이 시작되도록 한 번 그린 뒤
+    panel.classList.add("open");
     const v = freshVideo();
+    v.addEventListener("playing", () => v.classList.add("on"), { once: true });
     v.srcObject = shotStream;
     await v.play().catch(() => {});
   } catch (e){
-    closeShot();
+    closeShot(true);
     if (e?.name === "NotAllowedError") status("Camera access was blocked. Allow it in your browser settings, or use Upload.");
     else $("cam").click();
   }
 }
-function closeShot(){
-  shotStream?.getTracks().forEach(t => t.stop()); shotStream = null;
-  $("video").srcObject = null;
-  $("shot").hidden = true;
+// 접히는 동작이 끝난 뒤 카메라를 끔 — 접히는 동안 마지막 화면이 그대로 보임
+function closeShot(immediate = false){
+  const token = ++shotToken, panel = $("shot"), stream = shotStream;
+  shotStream = null;
+  panel.classList.remove("open");
+  const finish = () => {
+    if (token !== shotToken) return;
+    stream?.getTracks().forEach(t => t.stop());
+    $("video").srcObject = null; $("video").classList.remove("on");
+    panel.hidden = true;
+  };
+  if (immediate || matchMedia("(prefers-reduced-motion: reduce)").matches) finish(); else setTimeout(finish, 520);
 }
 function grabFrame(){
   const v = $("video"), side = Math.min(v.videoWidth, v.videoHeight) * 0.96;
@@ -302,16 +348,25 @@ function grabFrame(){
   return c.toDataURL("image/jpeg", 0.9).split(",")[1];
 }
 $("shotBtn").onclick = openShot;
-$("shotCancel").onclick = closeShot;
+$("shotCancel").onclick = () => closeShot();
 $("shotTake").onclick = () => {
   primePlayer();
   if (!$("video").videoWidth) return;
   const image = grabFrame();
-  closeShot();
+  const f = $("flash"); f.classList.remove("go"); void f.offsetWidth; f.classList.add("go");
+  setTimeout(() => closeShot(), 180);
   recognizeImage(image);
 };
 $("upload").addEventListener("click", () => primePlayer());
-document.addEventListener("visibilitychange", () => { if (document.hidden && shotStream) closeShot(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden && shotStream) closeShot(true); });
+
+// 결과가 위에서부터 차례로 떠오르게
+function rise(els, start = 0){
+  els.forEach((el, i) => {
+    el.classList.remove("rise"); el.style.setProperty("--i", start + i);
+    void el.offsetWidth; el.classList.add("rise");
+  });
+}
 
 /* ---------- Result ---------- */
 function showAlbum(r){
@@ -330,6 +385,8 @@ function showAlbum(r){
       li.append(b); ul.append(li);
     });
   $("result").hidden = false;
+  $("result").classList.remove("stale");
+  rise([$("title"), $("meta"), $("player"), ...$("tracks").children]);
 }
 
 function showVideos(vids, label){
@@ -343,6 +400,8 @@ function showVideos(vids, label){
     box.append(b);
     if (i === 0) play(v, b);
   });
+  $("result").classList.remove("stale");
+  rise([...box.children], 3 + $("tracks").children.length);
   $("result").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
