@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>LP 스캐너</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Noto+Sans+KR:wght@400;500;700&display=swap">
+<style>
+:root{
+  --bg:#efeae2; --surface:#fbf9f5; --fg:#1d1a17; --muted:#6c645b; --line:#d8d0c4;
+  --accent:#d6331f; --accent-fg:#fff; --vinyl:#151312;
+  --display:"Archivo Black","Arial Black",system-ui,sans-serif;
+  --body:"Noto Sans KR",system-ui,-apple-system,sans-serif;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#14120f; --surface:#1f1c18; --fg:#f1ebe2; --muted:#a59c90; --line:#35302a;
+  --accent:#ff5a40; --accent-fg:#14120f; --vinyl:#050404; color-scheme:dark}}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--body);font-size:15px;line-height:1.55}
+.wrap{max-width:520px;margin:0 auto;padding-block:calc(env(safe-area-inset-top,0px) + 20px) calc(env(safe-area-inset-bottom,0px) + 40px);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;gap:18px}
+header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+h1{font-family:var(--display);font-size:2rem;line-height:1;margin:0}
+.sub{color:var(--muted);margin:6px 0 0}
+.gear{flex:none;width:42px;height:42px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--fg);font-size:1.1rem;cursor:pointer}
+.deck{position:relative;aspect-ratio:1/1;width:100%;border-radius:6px;overflow:hidden;background:var(--surface);border:1px solid var(--line)}
+.deck img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--vinyl)}
+.empty{position:absolute;inset:0;display:grid;place-items:center}
+.disc{width:72%;aspect-ratio:1;border-radius:50%;background:repeating-radial-gradient(circle,var(--vinyl) 0 2px,#2a2622 3px 4px);display:grid;place-items:center}
+.disc span{width:34%;aspect-ratio:1;border-radius:50%;background:var(--accent);display:grid;place-items:center;color:var(--accent-fg);font-family:var(--display);font-size:.8rem;text-align:center;line-height:1.1}
+.spin .disc{animation:spin 1.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin .disc{animation:none}}
+.btns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:16px 10px;border:0;border-radius:999px;background:var(--accent);color:var(--accent-fg);font:700 1rem var(--body);cursor:pointer;text-align:center}
+.btn.alt{background:var(--surface);color:var(--fg);border:1px solid var(--line)}
+.btn:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid var(--fg);outline-offset:3px}
+.busy .btns{opacity:.6;pointer-events:none}
+.status{color:var(--muted);text-align:center;min-height:1.5em;margin:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:18px;display:flex;flex-direction:column;gap:14px}
+.eyebrow{font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0}
+.album{font-family:var(--display);font-size:1.45rem;line-height:1.15;margin:2px 0 0}
+.artist{font-weight:700;margin:2px 0 0}
+.meta{color:var(--muted);font-size:.88rem;margin:0}
+.player{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:6px;overflow:hidden}
+.player iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.nowplaying{font-weight:700;margin:0;font-size:.95rem}
+.list{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}
+.list button{width:100%;text-align:left;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--fg);font:500 .92rem var(--body);cursor:pointer}
+.list button[aria-current="true"]{border-color:var(--accent);color:var(--accent)}
+.conf{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;font-weight:700;border:1px solid var(--line);letter-spacing:0;text-transform:none}
+.retry{align-self:center;padding:10px 18px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--fg);font:500 .95rem var(--body);cursor:pointer}
+form{display:flex;flex-direction:column;gap:12px}
+label.f{display:flex;flex-direction:column;gap:4px;font-weight:700;font-size:.9rem}
+label.f input{padding:12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font:400 .95rem var(--body);min-width:0}
+.note{font-size:.8rem;color:var(--muted);margin:0}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <header>
+    <div>
+      <h1>LP 스캐너</h1>
+      <p class="sub">LP 표지를 찍으면 앨범을 찾아 바로 틀어줘요.</p>
+    </div>
+    <button class="gear" id="gear" type="button" aria-label="접속 코드 설정">⚙︎</button>
+  </header>
+
+  <form class="card" id="settings" hidden>
+    <p class="eyebrow">접속 코드</p>
+    <label class="f">관리자가 정한 접속 코드
+      <input id="kCode" type="password" autocomplete="off">
+    </label>
+    <p class="note">이 휴대폰 브라우저에만 저장돼요.</p>
+    <button class="btn" type="submit">저장</button>
+  </form>
+
+  <div class="deck" id="deck">
+    <div class="empty"><div class="disc"><span>SIDE<br>A</span></div></div>
+    <img id="preview" alt="찍은 LP 표지" hidden>
+  </div>
+
+  <div class="btns">
+    <label class="btn" for="cam">📷 사진 찍기</label>
+    <label class="btn alt" for="upload">🖼️ 사진 올리기</label>
+  </div>
+  <input id="cam" type="file" accept="image/*" capture="environment" hidden>
+  <input id="upload" type="file" accept="image/*" hidden>
+  <p class="status" id="status" role="status">표지가 화면에 꽉 차게 찍으면 더 정확해요.</p>
+  <button class="retry" id="retry" type="button" hidden>다시 인식하기</button>
+
+  <section class="card" id="result" hidden>
+    <div>
+      <p class="eyebrow">찾은 앨범 <span class="conf" id="conf"></span> <span class="conf" id="src"></span></p>
+      <p class="album" id="album"></p>
+      <p class="artist" id="artist"></p>
+      <p class="meta" id="meta"></p>
+      <p class="note" id="why"></p>
+    </div>
+    <div class="player" id="player"></div>
+    <p class="nowplaying" id="nowplaying"></p>
+    <div>
+      <p class="eyebrow">곡 선택</p>
+      <ul class="list" id="tracks"></ul>
+    </div>
+    <div>
+      <p class="eyebrow">다른 영상</p>
+      <ul class="list" id="videos"></ul>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const store = {
+  get(k){ try { return localStorage.getItem(k) || ""; } catch { return ""; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch {} }
+};
+let lastFile = null;
+
+function openSettings(show){ $("settings").hidden = !show; if (show) $("kCode").value = store.get("lp_code"); }
+$("gear").onclick = () => openSettings($("settings").hidden);
+$("settings").onsubmit = e => { e.preventDefault(); store.set("lp_code", $("kCode").value.trim()); openSettings(false); status("저장했어요."); };
+
+async function api(path, opts = {}){
+  const r = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), "x-access-code": store.get("lp_code") } });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401){ openSettings(true); throw new Error("접속 코드를 넣어 주세요."); }
+  if (!r.ok) throw new Error(j.error || "서버 오류 (" + r.status + ")");
+  return j;
+}
+
+function status(t){ $("status").textContent = t; }
+function busy(on){ $("app").classList.toggle("busy", on); $("deck").classList.toggle("spin", on && $("preview").hidden); }
+
+$("cam").onchange = handle;
+$("upload").onchange = handle;
+$("retry").onclick = () => lastFile && recognize(lastFile);
+$("deck").addEventListener("dragover", e => e.preventDefault());
+$("deck").addEventListener("drop", e => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) start(f); });
+document.addEventListener("paste", e => { const f = [...(e.clipboardData?.files || [])][0]; if (f) start(f); });
+
+function handle(e){ const f = e.target.files?.[0]; e.target.value = ""; if (f) start(f); }
+function start(file){
+  if (!file.type.startsWith("image/")) return;
+  lastFile = file;
+  $("preview").src = URL.createObjectURL(file);
+  $("preview").hidden = false;
+  recognize(file);
+}
+
+function shrink(file){
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(1, 1400 / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      res(c.toDataURL("image/jpeg", 0.85).split(",")[1]);
+    };
+    img.onerror = () => rej(new Error("사진을 열 수 없어요."));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+async function recognize(file){
+  $("result").hidden = true; $("retry").hidden = true;
+  busy(true); status("구글 이미지 검색으로 앨범 찾는 중…");
+  try {
+    const image = await shrink(file);
+    const j = await api("/api/recognize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ image }) });
+    if (!j.found){ status("앨범을 알아보지 못했어요. 표지를 크게 다시 찍어 보세요."); $("retry").hidden = false; return; }
+    showAlbum(j);
+    showVideos(j.videos, j.album.top_track || j.album.album);
+    status(j.videos?.length ? "찾았어요! 재생이 안 되면 플레이어를 한 번 눌러 주세요." : "앨범은 찾았는데 영상을 못 찾았어요. 아래 곡을 눌러 보세요.");
+  } catch (err){
+    status(err.message); $("retry").hidden = false;
+  } finally { busy(false); }
+}
+
+function showAlbum(j){
+  const r = j.album;
+  $("album").textContent = r.album || "";
+  $("artist").textContent = r.artist;
+  $("meta").textContent = [r.year, r.genre].filter(Boolean).join(" · ");
+  $("conf").textContent = { high: "정확", medium: "아마도", low: "추정" }[r.confidence] || "추정";
+  $("src").textContent = { web: "구글 검색 다수결", cover: "표지 판독", both: "검색+표지" }[r.source] || "";
+  $("why").textContent = j.votes?.length ? "검색에서 자주 나온 말: " + j.votes.map(v => `${v.phrase}(${v.count})`).join(", ")
+    : (j.web ? "" : "구글 이미지 검색을 쓰지 못해 표지만 보고 판단했어요.");
+  const ul = $("tracks"); ul.textContent = "";
+  const items = [...(Array.isArray(r.tracks) ? r.tracks : []).map(String), "💿 앨범 전체 듣기"];
+  items.slice(0, 6).forEach(t => {
+    const li = document.createElement("li"), b = document.createElement("button");
+    b.type = "button"; b.textContent = t.startsWith("💿") ? t : "♪ " + t;
+    b.onclick = async () => {
+      const q = t.startsWith("💿") ? r.artist + " " + r.album + " full album" : r.artist + " " + t;
+      status("영상 찾는 중…");
+      try { const v = await api("/api/youtube?q=" + encodeURIComponent(q)); showVideos(v.videos, t); status(""); }
+      catch (e){ status(e.message); }
+    };
+    li.append(b); ul.append(li);
+  });
+  $("result").hidden = false;
+}
+
+function showVideos(vids, label){
+  [...$("tracks").children].forEach(li => li.firstChild.setAttribute("aria-current", String(!!label && li.firstChild.textContent.includes(label))));
+  const ul = $("videos"); ul.textContent = "";
+  if (!vids?.length){ $("nowplaying").textContent = "맞는 영상을 찾지 못했어요."; return; }
+  play(vids[0]);
+  vids.forEach(v => {
+    const li = document.createElement("li"), b = document.createElement("button");
+    b.type = "button"; b.textContent = v.title + " · " + v.channel;
+    b.onclick = () => play(v);
+    li.append(b); ul.append(li);
+  });
+  $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function play(v){
+  $("player").innerHTML = '<iframe src="https://www.youtube.com/embed/' + encodeURIComponent(v.id) +
+    '?autoplay=1&playsinline=1&rel=0" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen title="YouTube 플레이어"></iframe>';
+  $("nowplaying").textContent = "▶ " + v.title;
+}
+</script>
+</body>
+</html>
