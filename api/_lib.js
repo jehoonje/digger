@@ -121,6 +121,11 @@ JSON만 답하세요:
 const SB_URL = () => (process.env.SUPABASE_URL || "").replace(/\/$/, "");
 const SB_KEY = () => process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
 const CACHE_DAYS = 30;
+const sbHeaders = () => {
+  const k = SB_KEY();
+  // 예전 JWT 형식(eyJ…)만 Authorization에 넣고, 새 형식(sb_secret_…)은 apikey 헤더만 사용
+  return k.startsWith("eyJ") ? { apikey: k, authorization: "Bearer " + k } : { apikey: k };
+};
 const normQ = q => String(q).toLowerCase().replace(/\s+/g, " ").trim();
 
 async function cacheGet(q) {
@@ -128,7 +133,7 @@ async function cacheGet(q) {
   try {
     const since = new Date(Date.now() - CACHE_DAYS * 864e5).toISOString();
     const r = await fetch(`${SB_URL()}/rest/v1/yt_cache?select=videos&q=eq.${encodeURIComponent(q)}&created_at=gte.${since}&limit=1`, {
-      headers: { apikey: SB_KEY(), authorization: "Bearer " + SB_KEY() }
+      headers: sbHeaders()
     });
     if (!r.ok) return null;
     const rows = await r.json();
@@ -141,7 +146,7 @@ async function cacheSet(q, videos, source) {
   try {
     await fetch(`${SB_URL()}/rest/v1/yt_cache?on_conflict=q`, {
       method: "POST",
-      headers: { apikey: SB_KEY(), authorization: "Bearer " + SB_KEY(), "content-type": "application/json",
+      headers: { ...sbHeaders(), "content-type": "application/json",
         prefer: "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify({ q, videos, source, created_at: new Date().toISOString() })
     });
