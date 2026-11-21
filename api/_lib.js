@@ -104,17 +104,17 @@ Identify the EXACT album, not just the artist. Work in this order:
 3. Recall that artist's albums and what each cover looks like. Compare each candidate's cover to your description and pick the one whose ARTWORK matches.
 
 Important:
-- A band or artist name printed on the cover (for example "BOSTON") appears on almost all of that artist's albums. It identifies the artist only, never the album. Do not default to the self-titled or debut album because the name matches.
-- Album-specific evidence wins: an album title or number printed on the cover (e.g. "제3집", "Third Stage", "II"), a distinctive illustration, or page titles below that name a specific album, especially pages showing an EXACT copy of the cover.
-- If the search results mostly repeat only the artist name, ignore them for choosing the album and rely on the artwork.
+- A band or artist name printed on the cover (for example "BOSTON") appears on many of that artist's albums, so it identifies the artist, not the album. Decide the album from the artwork itself and from album-specific evidence.
+- Album-specific evidence: an album title or number printed on the cover (e.g. "제3집", "Third Stage", "II"), a distinctive illustration, or page titles below that name a specific album, especially pages showing an EXACT copy of the cover. A self-titled album is a valid answer when the artwork matches it.
 - If two albums remain plausible, choose the one whose artwork matches best and set confidence to "low".
+- candidates: list 3-6 of this artist's albums with similar-looking covers (always include your answer), using each album's exact official title.
 Write artist, album and track names in their original form (Korean albums in Korean). tracks: 3-5 well-known songs from THAT album only.
 source: "web" (search evidence named the album), "cover" (artwork/text on the cover), or "both".
 
 ${evidence}
 
 Reply with JSON only:
-{"cover_description":"","candidates":[{"album":"","match":"why it does or doesn't match the artwork"}],"artist":"","album":"","year":"","genre":"","top_track":"","tracks":[""],"confidence":"high|medium|low","source":"web|cover|both"}
+{"cover_description":"","candidates":[{"album":"","year":"","match":"how its cover compares with this photo"}],"artist":"","album":"","year":"","genre":"","top_track":"","tracks":[""],"confidence":"high|medium|low","source":"web|cover|both"}
 If there is no album cover in the photo at all, set artist to "".`;
 
   let lastErr = "";
@@ -288,4 +288,71 @@ export async function usageReport() {
     second_code_enabled: !!process.env.SECOND_ACCESS_CODE,
     paid_backup: !!(process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD)
   };
+}
+
+// 5단계: 구글 검색 근거로 후보 앨범 점수 매기기 — 근거가 뚜렷하면 Gemini 답을 바로잡음
+const norm = t => String(t || "").toLowerCase().normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+const DEBUT = /(^| )(1집|제1집|1st|first album|debut|s t|self titled|selftitled)( |$)/;
+
+export function decideByEvidence(result, detect) {
+  if (!detect?.ok || !result?.artist) return { decision: "no web evidence" };
+  const artist = norm(result.artist);
+  const docs = [
+    ...detect.pages.map(p => ({ t: " " + norm(p.title) + " ", w: p.full ? 3 : 1 })),
+    ...detect.bestGuess.map(b => ({ t: " " + norm(b) + " ", w: 3 })),
+    ...detect.entities.map(e => ({ t: " " + norm(e.name) + " ", w: Math.max(1, Math.round(e.score * 2)) }))
+  ];
+  const names = new Map();
+  for (const c of [...(result.candidates || []), { album: result.album, year: result.year }]) {
+    const n = norm(c.album);
+    if (n && !names.has(n)) names.set(n, c);
+  }
+  const others = [...names.keys()].filter(n => n !== artist && n.length >= 2);
+  const scores = [...names.keys()].map(n => {
+    let score = 0;
+    if (n === artist) {
+      // 셀프 타이틀: 다른 후보 앨범명은 없고, 아티스트명이 두 번 나오거나 1집 표시가 있는 페이지
+      for (const d of docs) {
+        if (others.some(o => d.t.includes(" " + o + " "))) continue;
+        const times = (d.t.match(new RegExp("(?<= )" + artist.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?= )", "g")) || []).length;
+        if (times >= 2 || (times >= 1 && DEBUT.test(d.t))) score += d.w;
+      }
+    } else {
+      for (const d of docs) if (d.t.includes(" " + n + " ")) score += d.w;
+    }
+    return { album: names.get(n).album, key: n, score };
+  }).sort((a, b) => b.score - a.score);
+
+  const [best, second] = scores;
+  const chosen = norm(result.album);
+  if (best && best.score >= 3 && best.score >= 2 * (second?.score || 0) && best.key !== chosen)
+    return { override: best.album, decision: `web evidence ${best.score} vs ${second?.score || 0}`, scores };
+  return { decision: best?.key === chosen ? "web agrees" : "kept model answer", scores };
+}
+
+// 바뀐 앨범의 연도·장르·대표곡 다시 받기(텍스트만)
+export async function albumDetails(artist, album) {
+  const key = GEMINI_KEY();
+  const prompt = `Album: "${album}" by ${artist}. Reply with JSON only: {"year":"","genre":"","top_track":"","tracks":[""]} — tracks: 3-5 well-known songs from this exact album, names in their original form.`;
+  for (const model of GEMINI_MODELS()) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.1 } })
+    });
+    if (r.status === 404 || r.status === 429 || r.status === 400) continue;
+    const j = await r.json().catch(() => ({}));
+    const text = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
+    try { return JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)); } catch { return null; }
+  }
+  return null;
+}
+
+export async function logRecognition(row) {
+  if (!SB_URL() || !SB_KEY()) return;
+  try {
+    await fetch(`${SB_URL()}/rest/v1/recog_log`, {
+      method: "POST", headers: { ...sbHeaders(), "content-type": "application/json", prefer: "return=minimal" },
+      body: JSON.stringify(row)
+    });
+  } catch {}
 }

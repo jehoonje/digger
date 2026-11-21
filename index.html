@@ -94,7 +94,7 @@ button,input{font:inherit;color:inherit}
     <p class="status" id="status" role="status">Photograph a record sleeve.</p>
 
     <form id="secondForm" autocomplete="off" hidden>
-      <p>Today's search limit has been reached.</p>
+      <p id="secondText">Today's search limit has been reached.</p>
       <div class="row">
         <input class="field" id="code2" type="password" placeholder="Second access code" aria-label="Second access code">
         <button class="primary" id="enter2" type="submit">Continue</button>
@@ -168,8 +168,10 @@ $("gateForm").onsubmit = async e => {
 
 /* ---------- Second code ---------- */
 let pendingRetry = null;
-function askSecond(retry){
+function hideSecond(){ $("secondForm").hidden = true; pendingRetry = null; }
+function askSecond(retry, message){
   pendingRetry = retry;
+  if (message) $("secondText").textContent = message;
   $("secondForm").hidden = false;
   $("secondMsg").textContent = "";
   status("");
@@ -193,8 +195,8 @@ $("secondForm").onsubmit = async e => {
 
 async function searchAndPlay(q, label){
   status("Searching…");
-  try { const v = await api("/api/youtube?q=" + encodeURIComponent(q)); showVideos(v.videos, label); status(""); }
-  catch (e){ if (e.secondCode) askSecond(() => searchAndPlay(q, label)); else status(e.message); }
+  try { const v = await api("/api/youtube?q=" + encodeURIComponent(q)); hideSecond(); showVideos(v.videos, label); status(""); }
+  catch (e){ if (e.secondCode) askSecond(() => searchAndPlay(q, label), e.message); else status(e.message); }
 }
 
 /* ---------- Capture ---------- */
@@ -221,6 +223,7 @@ function shrink(file){
 }
 
 async function recognize(file){
+  hideSecond();
   $("main").classList.add("busy");
   status("Searching…");
   try {
@@ -230,7 +233,7 @@ async function recognize(file){
     showAlbum(j.album);
     if (j.needSecond){
       const a = j.album, label = a.top_track || "Full album";
-      askSecond(() => searchAndPlay(a.artist + " " + (a.top_track || a.album), label));
+      askSecond(() => searchAndPlay(a.artist + " " + (a.top_track || a.album), label), j.secondMsg);
       return;
     }
     showVideos(j.videos, j.album.top_track);
