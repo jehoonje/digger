@@ -185,8 +185,10 @@ async function youtubeOfficial(q) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
     const reason = j.error?.errors?.[0]?.reason || "";
-    throw Object.assign(new Error("YouTube error: " + (j.error?.message || r.status)),
-      { fallback: r.status === 403 || r.status === 429 || /quota|rateLimit/i.test(reason) });
+    // 하루 한도 소진일 때만 유료 백업으로 넘어가고, 키 설정 문제 등은 그대로 오류를 보여줌
+    const quota = /quotaExceeded|dailyLimitExceeded|rateLimitExceeded|userRateLimitExceeded/i.test(reason) || r.status === 429;
+    throw Object.assign(new Error("YouTube error: " + (j.error?.message || r.status) + (reason ? " (" + reason + ")" : "")),
+      { fallback: quota, quota });
   }
   return (j.items || []).map(i => ({ id: i.id.videoId, title: stripTags(i.snippet.title), channel: stripTags(i.snippet.channelTitle) }));
 }
@@ -236,7 +238,9 @@ export function hasSecondCode(req) {
   const code = process.env.SECOND_ACCESS_CODE;
   return !!code && req.headers["x-second-code"] === code;
 }
-const secondCodeError = () => Object.assign(new Error("Daily search limit reached. Enter the second access code to continue."), { secondCode: true });
+const secondCodeError = why => Object.assign(new Error(why === "quota"
+  ? "YouTube's free daily quota is used up. Enter the second access code to use the paid backup search."
+  : "Daily search limit reached. Enter the second access code to continue."), { secondCode: true });
 
 export async function searchYouTube(rawQ, { second = false } = {}) {
   const q = normQ(rawQ);
@@ -244,18 +248,44 @@ export async function searchYouTube(rawQ, { second = false } = {}) {
   if (cached) return cached;
 
   const gate = !!process.env.SECOND_ACCESS_CODE;
-  if (gate && !second && (await usageGet()) >= DAILY_FREE()) throw secondCodeError();
+  if (gate && !second && (await usageGet()) >= DAILY_FREE()) throw secondCodeError("limit");
 
   let videos, source = "youtube";
   try {
     videos = await youtubeOfficial(q);
   } catch (e) {
     if (!e.fallback) throw e;
-    if (gate && !second) throw secondCodeError(); // 유료 백업 검색은 두 번째 코드가 있을 때만
+    if (gate && !second) throw secondCodeError("quota"); // 유료 백업 검색은 두 번째 코드가 있을 때만
     videos = await youtubeDataForSEO(q);
     source = "dataforseo";
   }
   await usageBump();
   await cacheSet(q, videos, source);
   return videos;
+}
+
+// 상태 확인용: 오늘 검색 수와 연결 상태
+export async function usageReport() {
+  const sb = !!(SB_URL() && SB_KEY());
+  let sbOk = false, cached = null, searches = 0;
+  if (sb) {
+    try {
+      const r = await fetch(`${SB_URL()}/rest/v1/search_usage?select=searches&day=eq.${kstDay()}`, { headers: sbHeaders() });
+      sbOk = r.ok;
+      if (r.ok) searches = (await r.json())[0]?.searches || 0;
+      const c = await fetch(`${SB_URL()}/rest/v1/yt_cache?select=q`, { headers: { ...sbHeaders(), prefer: "count=exact", range: "0-0" } });
+      cached = Number((c.headers.get("content-range") || "").split("/")[1]) || 0;
+    } catch {}
+  }
+  return {
+    day_kst: kstDay(),
+    searches_today: searches,
+    daily_limit: DAILY_FREE(),
+    remaining_before_second_code: Math.max(0, DAILY_FREE() - searches),
+    cached_searches: cached,
+    supabase: sb ? (sbOk ? "connected" : "configured but failing (check SUPABASE_URL / key)") : "not configured",
+    youtube_key: !!YOUTUBE_KEY(),
+    second_code_enabled: !!process.env.SECOND_ACCESS_CODE,
+    paid_backup: !!(process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD)
+  };
 }
