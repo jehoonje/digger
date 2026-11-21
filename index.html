@@ -402,7 +402,6 @@ function showVideos(vids, label){
   });
   $("result").classList.remove("stale");
   rise([...box.children], 3 + $("tracks").children.length);
-  $("result").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // 유튜브 플레이어 — 결과가 나오면 바로 재생. 브라우저가 소리 있는 자동재생을 막으면
