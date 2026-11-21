@@ -11,7 +11,7 @@ const GEMINI_MODELS = () =>
 export function checkAccess(req, res) {
   const code = process.env.ACCESS_CODE;
   if (code && req.headers["x-access-code"] !== code) {
-    res.status(401).json({ error: "접속 코드가 맞지 않아요." });
+    res.status(401).json({ error: "Incorrect access code." });
     return false;
   }
   return true;
@@ -75,7 +75,7 @@ export function vote(detect) {
 // 3단계: Gemini가 다수결 결과 + 표지 사진으로 최종 앨범 정리
 export async function resolveAlbum(base64, detect, votes) {
   const key = GEMINI_KEY();
-  if (!key) throw new Error("GEMINI_API_KEY가 설정되지 않았어요.");
+  if (!key) throw new Error("GEMINI_API_KEY is not set.");
   const evidence = detect?.ok
     ? `구글 이미지 웹 검색 결과:
 - 구글 추정 이름: ${detect.bestGuess.join(" / ") || "없음"}
@@ -108,23 +108,23 @@ JSON만 답하세요:
       })
     });
     const j = await r.json().catch(() => ({}));
-    if (r.status === 404) { lastErr = `${model} 모델을 찾을 수 없음`; continue; }
-    if (!r.ok) throw new Error("Gemini 오류: " + (j.error?.message || r.status));
+    if (r.status === 404) { lastErr = `model ${model} not found`; continue; }
+    if (!r.ok) throw new Error("Gemini error: " + (j.error?.message || r.status));
     const text = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
     const s = text.indexOf("{"), e = text.lastIndexOf("}");
-    try { return { ...JSON.parse(text.slice(s, e + 1)), model }; } catch { throw new Error("Gemini 응답을 읽지 못했어요."); }
+    try { return { ...JSON.parse(text.slice(s, e + 1)), model }; } catch { throw new Error("Could not read the recognition result. Try again."); }
   }
-  throw new Error("사용할 수 있는 Gemini 모델이 없어요: " + lastErr);
+  throw new Error("No available Gemini model: " + lastErr);
 }
 
 // 4단계: YouTube에서 재생 가능한 영상 찾기
 export async function searchYouTube(q) {
   const key = YOUTUBE_KEY();
-  if (!key) throw new Error("YOUTUBE_API_KEY가 설정되지 않았어요.");
+  if (!key) throw new Error("YOUTUBE_API_KEY is not set.");
   const u = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=5&regionCode=KR&q="
     + encodeURIComponent(q) + "&key=" + encodeURIComponent(key);
   const r = await fetch(u);
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error("YouTube 오류: " + (j.error?.message || r.status));
+  if (!r.ok) throw new Error("YouTube error: " + (j.error?.message || r.status));
   return (j.items || []).map(i => ({ id: i.id.videoId, title: stripTags(i.snippet.title), channel: stripTags(i.snippet.channelTitle) }));
 }

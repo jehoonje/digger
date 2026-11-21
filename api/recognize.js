@@ -3,11 +3,11 @@ import { checkAccess, webDetect, vote, resolveAlbum, searchYouTube } from "./_li
 export const config = { maxDuration: 30 };
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "POST만 받아요." });
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only." });
   if (!checkAccess(req, res)) return;
   try {
     const image = String(req.body?.image || "").replace(/^data:image\/\w+;base64,/, "");
-    if (image.length < 100) return res.status(400).json({ error: "사진이 비어 있어요." });
+    if (image.length < 100) return res.status(400).json({ error: "The image is empty." });
 
     const detect = await webDetect(image).catch(e => ({ ok: false, reason: e.message }));
     const votes = vote(detect);
@@ -19,6 +19,6 @@ export default async function handler(req, res) {
     const videos = await searchYouTube(q).catch(() => []);
     res.json({ found: true, album, videos, votes: votes.slice(0, 5), web: detect.ok, webReason: detect.ok ? undefined : detect.reason });
   } catch (e) {
-    res.status(500).json({ error: e.message || "알 수 없는 오류" });
+    res.status(500).json({ error: e.message || "Unknown error" });
   }
 }
