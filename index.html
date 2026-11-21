@@ -47,6 +47,14 @@ button,input{font:inherit;color:inherit}
 .ghost{padding:13px;border:1px solid var(--line);background:transparent;border-radius:2px;cursor:pointer;text-align:center;font-weight:500}
 .ghost:hover{border-color:var(--fg)}
 .busy .actions{opacity:.4;pointer-events:none}
+.live{position:relative;width:100%;aspect-ratio:4/3;background:#000;overflow:hidden;border-radius:2px;margin-top:-16px}
+.live video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.live .guide{position:absolute;left:50%;top:50%;width:62%;aspect-ratio:1;transform:translate(-50%,-50%);border:1px solid rgba(255,255,255,.55);border-radius:2px;transition:border-color .3s}
+.live.steady .guide{border-color:#fff}
+.live .tag{position:absolute;left:10px;bottom:10px;max-width:calc(100% - 20px);padding:4px 8px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;border-radius:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.live.searching .tag::after{content:"";display:inline-block;width:6px;height:6px;margin-left:6px;border-radius:50%;background:#fff;animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.2}}
+@media (prefers-reduced-motion:reduce){.live.searching .tag::after{animation:none}}
 .status{margin:-16px 0 0;color:var(--muted);font-size:13px;min-height:1.5em}
 
 #secondForm{display:flex;flex-direction:column;gap:10px;padding:18px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
@@ -87,12 +95,16 @@ button,input{font:inherit;color:inherit}
     </div>
 
     <div class="actions">
-      <label class="ghost" for="cam">Take photo</label>
+      <button class="ghost" id="liveBtn" type="button">Stop camera</button>
       <label class="ghost" for="upload">Upload</label>
     </div>
-    <input id="cam" type="file" accept="image/*" capture="environment" hidden>
+    <div class="live" id="live" hidden>
+      <video id="video" playsinline muted autoplay></video>
+      <div class="guide"></div>
+      <span class="tag" id="liveTag">Starting camera…</span>
+    </div>
     <input id="upload" type="file" accept="image/*" hidden>
-    <p class="status" id="status" role="status">Photograph a record sleeve.</p>
+    <p class="status" id="status" role="status"></p>
 
     <div id="secondSlot"></div>
     <template id="secondTpl">
@@ -138,6 +150,7 @@ async function api(path, opts = {}){
 /* ---------- Gate ---------- */
 function enterMain(){
   const gate = $("gate"), main = $("main");
+  if (cam.wanted) startCamera();
   main.hidden = false;
   gate.classList.add("out");
   requestAnimationFrame(() => requestAnimationFrame(() => main.classList.remove("pre")));
@@ -207,7 +220,6 @@ async function searchAndPlay(q, label){
 
 /* ---------- Capture ---------- */
 function status(t){ $("status").textContent = t; }
-$("cam").onchange = handle;
 $("upload").onchange = handle;
 document.addEventListener("paste", e => { const f = [...(e.clipboardData?.files || [])][0]; if (f && !$("main").hidden) start(f); });
 function handle(e){ const f = e.target.files?.[0]; e.target.value = ""; if (f) start(f); }
@@ -228,25 +240,115 @@ function shrink(file){
   });
 }
 
+let currentKey = "";
 async function recognize(file){
+  try { await recognizeImage(await shrink(file), false); } catch (err){ status(err.message); }
+}
+
+// 공용 인식 — 사진 업로드와 실시간 카메라가 함께 사용. 찾으면 true
+async function recognizeImage(image, live){
   hideSecond();
-  $("main").classList.add("busy");
-  status("Searching…");
+  if (!live){ $("main").classList.add("busy"); status("Searching…"); }
   try {
-    const image = await shrink(file);
     const j = await api("/api/recognize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ image }) });
-    if (!j.found){ status("No match. Try a clearer, closer photo of the sleeve."); return; }
+    if (!j.found){ if (!live) status("No match. Try a clearer, closer photo of the sleeve."); return false; }
+    const key = (j.album.artist + "|" + j.album.album).toLowerCase();
+    if (live && key === currentKey) return true; // 같은 앨범이면 재생 중인 곡을 그대로 둠
+    currentKey = key;
     showAlbum(j.album);
     if (j.needSecond){
       const a = j.album, label = a.top_track || "Full album";
       askSecond(() => searchAndPlay(a.artist + " " + (a.top_track || a.album), label), j.secondMsg);
-      return;
+      return true;
     }
-    showVideos(j.videos, j.album.top_track);
+    showVideos(j.videos, j.album.top_track, !live);
     status(j.videos?.length ? "" : "No video found. Pick a track below.");
-  } catch (err){ status(err.message); }
+    return true;
+  } catch (err){ status(err.message); return false; }
   finally { $("main").classList.remove("busy"); }
 }
+
+/* ---------- Live camera ---------- */
+// 32x32 흑백 미리보기로 움직임을 재서, 1.2초 정도 멈춰 있으면 한 번 인식.
+// 같은 장면은 다시 보내지 않고, 화면이 크게 바뀌어야 다음 인식을 함.
+const cam = { stream: null, timer: null, prev: null, sent: null, stableSince: 0, busy: false, wanted: true };
+const SAMPLE_MS = 250, STEADY_MS = 1200, MOVE_LIMIT = 7, DETAIL_MIN = 16, CHANGE_MIN = 16;
+const tiny = document.createElement("canvas"); tiny.width = tiny.height = 32;
+const tctx = tiny.getContext("2d", { willReadFrequently: true });
+
+function liveTag(t, cls){
+  $("liveTag").textContent = t;
+  $("live").classList.toggle("searching", cls === "searching");
+}
+function signature(){
+  const v = $("video");
+  const side = Math.min(v.videoWidth, v.videoHeight) * 0.62; // 가이드 사각형 영역만
+  tctx.drawImage(v, (v.videoWidth - side) / 2, (v.videoHeight - side) / 2, side, side, 0, 0, 32, 32);
+  const d = tctx.getImageData(0, 0, 32, 32).data, g = new Float32Array(1024);
+  for (let i = 0; i < 1024; i++) g[i] = d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114;
+  return g;
+}
+const diff = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
+const detail = a => { let m = 0; for (const x of a) m += x; m /= a.length; let v = 0; for (const x of a) v += (x - m) ** 2; return Math.sqrt(v / a.length); };
+
+function frameBase64(){
+  const v = $("video"), s = Math.min(1, 1280 / Math.max(v.videoWidth, v.videoHeight));
+  const c = document.createElement("canvas");
+  c.width = Math.round(v.videoWidth * s); c.height = Math.round(v.videoHeight * s);
+  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.85).split(",")[1];
+}
+
+async function tick(){
+  const v = $("video");
+  if (!cam.stream || cam.busy || !v.videoWidth || $("secondForm")) return;
+  const sig = signature(), now = performance.now();
+  const moving = cam.prev ? diff(sig, cam.prev) > MOVE_LIMIT : true;
+  cam.prev = sig;
+  if (moving){ cam.stableSince = now; $("live").classList.remove("steady"); return; }
+  $("live").classList.add("steady");
+  if (detail(sig) < DETAIL_MIN){ liveTag("Point at a record sleeve"); return; }
+  if (cam.sent && diff(sig, cam.sent) < CHANGE_MIN) return; // 이미 본 장면
+  if (now - cam.stableSince < STEADY_MS){ liveTag("Hold steady…"); return; }
+
+  cam.busy = true; cam.sent = sig;
+  liveTag("Searching…", "searching");
+  const found = await recognizeImage(frameBase64(), true);
+  cam.busy = false;
+  liveTag(found ? "Found: " + ($("title").textContent || "") : "No match. Try another angle", "");
+}
+
+async function startCamera(){
+  if (cam.stream) return;
+  if (!navigator.mediaDevices?.getUserMedia){ status("Live camera isn't supported in this browser. Use Upload."); return setLiveUI(false); }
+  try {
+    cam.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false });
+    $("video").srcObject = cam.stream;
+    await $("video").play().catch(() => {});
+    cam.prev = null; cam.sent = null; cam.stableSince = performance.now();
+    setLiveUI(true);
+    liveTag("Point at a record sleeve");
+    cam.timer = setInterval(tick, SAMPLE_MS);
+  } catch (e){
+    cam.stream = null; setLiveUI(false);
+    status(e?.name === "NotAllowedError" ? "Camera access was blocked. Allow it in your browser settings, or use Upload." : "Could not start the camera. Use Upload.");
+  }
+}
+function stopCamera(){
+  clearInterval(cam.timer); cam.timer = null;
+  cam.stream?.getTracks().forEach(t => t.stop()); cam.stream = null;
+  $("video").srcObject = null;
+  setLiveUI(false);
+}
+function setLiveUI(on){
+  $("live").hidden = !on;
+  $("liveBtn").textContent = on ? "Stop camera" : "Live scan";
+}
+$("liveBtn").onclick = () => { cam.wanted = !cam.stream; cam.wanted ? startCamera() : stopCamera(); };
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { if (cam.stream) { stopCamera(); cam.wanted = true; } }
+  else if (cam.wanted && !$("main").hidden) startCamera();
+});
 
 /* ---------- Result ---------- */
 function showAlbum(r){
@@ -267,7 +369,7 @@ function showAlbum(r){
   $("result").hidden = false;
 }
 
-function showVideos(vids, label){
+function showVideos(vids, label, scroll = true){
   [...$("tracks").querySelectorAll("button")].forEach(b => b.setAttribute("aria-current", String(b.dataset.label === label)));
   const box = $("related"); box.textContent = "";
   if (!vids?.length){ $("player").textContent = ""; return; }
@@ -278,7 +380,7 @@ function showVideos(vids, label){
     box.append(b);
     if (i === 0) play(v, b);
   });
-  $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+  if (scroll) $("result").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function play(v, btn){
