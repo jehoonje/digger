@@ -13,6 +13,7 @@
 @media (prefers-color-scheme: dark){:root{
   --bg:#0e0e0d; --fg:#f2f1ee; --muted:#7d7c78; --line:#262624; --field:#1a1a19; color-scheme:dark}}
 *,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--fg);font:400 15px/1.5 var(--font);-webkit-font-smoothing:antialiased}
 button,input{font:inherit;color:inherit}
@@ -93,7 +94,9 @@ button,input{font:inherit;color:inherit}
     <input id="upload" type="file" accept="image/*" hidden>
     <p class="status" id="status" role="status">Photograph a record sleeve.</p>
 
-    <form id="secondForm" autocomplete="off" hidden>
+    <div id="secondSlot"></div>
+    <template id="secondTpl">
+    <form id="secondForm" autocomplete="off">
       <p id="secondText">Today's search limit has been reached.</p>
       <div class="row">
         <input class="field" id="code2" type="password" placeholder="Second access code" aria-label="Second access code">
@@ -101,6 +104,7 @@ button,input{font:inherit;color:inherit}
       </div>
       <p class="msg" id="secondMsg" role="status"></p>
     </form>
+    </template>
 
     <div id="result" hidden>
       <div>
@@ -168,30 +172,32 @@ $("gateForm").onsubmit = async e => {
 
 /* ---------- Second code ---------- */
 let pendingRetry = null;
-function hideSecond(){ $("secondForm").hidden = true; pendingRetry = null; }
+function hideSecond(){ $("secondSlot").textContent = ""; pendingRetry = null; }
 function askSecond(retry, message){
   pendingRetry = retry;
-  if (message) $("secondText").textContent = message;
-  $("secondForm").hidden = false;
-  $("secondMsg").textContent = "";
   status("");
+  if (!$("secondForm")){
+    $("secondSlot").append($("secondTpl").content.cloneNode(true));
+    $("secondForm").onsubmit = submitSecond;
+  }
+  if (message) $("secondText").textContent = message;
+  $("secondMsg").textContent = "";
   $("code2").focus();
 }
-$("secondForm").onsubmit = async e => {
+async function submitSecond(e){
   e.preventDefault();
   const code = $("code2").value.trim();
   if (!code){ $("secondMsg").textContent = "Enter the second access code."; return; }
   $("enter2").disabled = true;
   try {
     const r = await fetch("/api/auth?second=1", { headers: { "x-access-code": store.get("lp_code"), "x-second-code": code } });
-    if (!r.ok){ $("secondMsg").textContent = "Incorrect code."; return; }
+    if (!r.ok){ $("secondMsg").textContent = "Incorrect code."; $("enter2").disabled = false; return; }
     store.set("lp_code2", code);
-    $("code2").value = ""; $("secondForm").hidden = true;
-    const retry = pendingRetry; pendingRetry = null;
+    const retry = pendingRetry;
+    hideSecond();
     if (retry) retry();
-  } catch { $("secondMsg").textContent = "Could not connect. Try again."; }
-  finally { $("enter2").disabled = false; }
-};
+  } catch { $("secondMsg").textContent = "Could not connect. Try again."; $("enter2").disabled = false; }
+}
 
 async function searchAndPlay(q, label){
   status("Searching…");
