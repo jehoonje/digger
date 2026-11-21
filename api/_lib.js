@@ -6,7 +6,8 @@ const YOUTUBE_KEY = () => process.env.YOUTUBE_API_KEY || process.env.GEMINI_API_
 
 // 무료 등급에서 이미지를 받는 모델부터 차례로 시도
 const GEMINI_MODELS = () =>
-  [process.env.GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"].filter(Boolean);
+  [process.env.GEMINI_MODEL, "gemini-3.8-flash", "gemini-3.6-flash", "gemini-flash-latest",
+   "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"].filter(Boolean);
 
 export function checkAccess(req, res) {
   const code = process.env.ACCESS_CODE;
@@ -37,7 +38,10 @@ export async function webDetect(base64) {
     ok: true,
     bestGuess: (wd.bestGuessLabels || []).map(l => l.label).filter(Boolean),
     entities: (wd.webEntities || []).filter(e => e.description).map(e => ({ name: e.description, score: +(e.score || 0).toFixed(2) })),
-    titles: (wd.pagesWithMatchingImages || []).map(p => stripTags(p.pageTitle)).filter(Boolean).slice(0, 30)
+    // 표지 전체가 똑같이 일치하는 페이지(full)가 부분 일치(partial)보다 훨씬 강한 근거
+    pages: (wd.pagesWithMatchingImages || [])
+      .map(p => ({ title: stripTags(p.pageTitle), full: (p.fullMatchingImages || []).length > 0 }))
+      .filter(p => p.title).slice(0, 30)
   };
 }
 
@@ -47,9 +51,12 @@ const STOP = new Set(["lp", "vinyl", "레코드", "판매", "중고", "음반", 
 
 export function vote(detect) {
   if (!detect?.ok) return [];
-  const docs = [...detect.titles, ...detect.bestGuess, ...detect.bestGuess];
+  const docs = [
+    ...detect.pages.map(p => ({ text: p.title, w: p.full ? 3 : 1 })),
+    ...detect.bestGuess.map(t => ({ text: t, w: 3 }))
+  ];
   const counts = new Map();
-  for (const doc of docs) {
+  for (const { text: doc, w } of docs) {
     const words = doc.toLowerCase().split(/[\s\[\]()\/,|·:\-–—_"'「」『』<>]+/).filter(w => w && !STOP.has(w) && w.length > 1);
     const seen = new Set();
     for (let n = 1; n <= 3; n++) {
@@ -57,7 +64,7 @@ export function vote(detect) {
         const g = words.slice(i, i + n).join(" ");
         if (seen.has(g)) continue;
         seen.add(g);
-        counts.set(g, (counts.get(g) || 0) + 1);
+        counts.set(g, (counts.get(g) || 0) + w);
       }
     }
   }
@@ -76,26 +83,39 @@ export function vote(detect) {
 export async function resolveAlbum(base64, detect, votes) {
   const key = GEMINI_KEY();
   if (!key) throw new Error("GEMINI_API_KEY is not set.");
+  const full = detect?.ok ? detect.pages.filter(p => p.full) : [];
+  const partial = detect?.ok ? detect.pages.filter(p => !p.full) : [];
   const evidence = detect?.ok
-    ? `구글 이미지 웹 검색 결과:
-- 구글 추정 이름: ${detect.bestGuess.join(" / ") || "없음"}
-- 관련 키워드(점수): ${detect.entities.slice(0, 10).map(e => `${e.name}(${e.score})`).join(", ") || "없음"}
-- 같은 이미지가 실린 페이지 제목들:
-${detect.titles.slice(0, 20).map(t => "  · " + t).join("\n") || "  없음"}
-- 여러 결과에 반복해서 나온 표현(다수결 횟수): ${votes.map(v => `${v.phrase}(${v.count})`).join(", ") || "없음"}`
-    : "구글 이미지 웹 검색 결과 없음. 표지 사진만 보고 판단하세요.";
+    ? `Google reverse image search results:
+- Google best guess: ${detect.bestGuess.join(" / ") || "none"}
+- Web entities (score): ${detect.entities.slice(0, 10).map(e => `${e.name}(${e.score})`).join(", ") || "none"}
+- Pages showing an EXACT copy of this cover (strongest evidence):
+${full.slice(0, 15).map(p => "  · " + p.title).join("\n") || "  none"}
+- Pages showing a similar/partial image (weaker):
+${partial.slice(0, 10).map(p => "  · " + p.title).join("\n") || "  none"}
+- Weighted repeated phrases: ${votes.map(v => `${v.phrase}(${v.count})`).join(", ") || "none"}`
+    : "No reverse image search results. Decide from the cover image alone.";
 
-  const prompt = `첨부 사진은 LP 레코드나 앨범 표지입니다(휴대폰 화면 캡처일 수 있으니 주변 화면은 무시).
-아래 구글 이미지 웹 검색 결과에서 여러 페이지에 반복해서 나온 아티스트명·앨범명을 우선 근거로 삼고(다수결), 표지에 적힌 글자와 그림으로 검증해 어떤 앨범인지 정하세요.
-검색 결과가 빈약하거나 서로 엇갈리면 표지 사진을 직접 읽어 판단하고 confidence를 낮추세요.
-아티스트·앨범·곡명은 원래 표기(한국 앨범이면 한글)로 쓰세요. tracks에는 그 앨범의 대표 곡 3~5개.
-source는 판단 근거: "web"(검색 다수결), "cover"(표지 직접 판독), "both".
+  const prompt = `The attached photo shows an LP or album cover (it may be a phone screenshot; ignore surrounding UI).
+Identify the EXACT album, not just the artist. Work in this order:
+
+1. Describe the cover artwork visually: main image or illustration, colors, layout, logo placement, and every piece of text you can read.
+2. Identify the artist.
+3. Recall that artist's albums and what each cover looks like. Compare each candidate's cover to your description and pick the one whose ARTWORK matches.
+
+Important:
+- A band or artist name printed on the cover (for example "BOSTON") appears on almost all of that artist's albums. It identifies the artist only, never the album. Do not default to the self-titled or debut album because the name matches.
+- Album-specific evidence wins: an album title or number printed on the cover (e.g. "제3집", "Third Stage", "II"), a distinctive illustration, or page titles below that name a specific album, especially pages showing an EXACT copy of the cover.
+- If the search results mostly repeat only the artist name, ignore them for choosing the album and rely on the artwork.
+- If two albums remain plausible, choose the one whose artwork matches best and set confidence to "low".
+Write artist, album and track names in their original form (Korean albums in Korean). tracks: 3-5 well-known songs from THAT album only.
+source: "web" (search evidence named the album), "cover" (artwork/text on the cover), or "both".
 
 ${evidence}
 
-JSON만 답하세요:
-{"artist":"","album":"","year":"","genre":"","top_track":"","tracks":[""],"confidence":"high|medium|low","source":"web|cover|both"}
-사진에 앨범 표지가 전혀 없으면 artist를 빈 문자열로.`;
+Reply with JSON only:
+{"cover_description":"","candidates":[{"album":"","match":"why it does or doesn't match the artwork"}],"artist":"","album":"","year":"","genre":"","top_track":"","tracks":[""],"confidence":"high|medium|low","source":"web|cover|both"}
+If there is no album cover in the photo at all, set artist to "".`;
 
   let lastErr = "";
   for (const model of GEMINI_MODELS()) {
@@ -108,7 +128,10 @@ JSON만 답하세요:
       })
     });
     const j = await r.json().catch(() => ({}));
-    if (r.status === 404) { lastErr = `model ${model} not found`; continue; }
+    // 없는 모델이거나 무료 한도가 찬 모델이면 다음 모델로
+    if (r.status === 404 || r.status === 429 || (r.status === 400 && /not found|not supported/i.test(j.error?.message || ""))) {
+      lastErr = `${model}: ${j.error?.message || r.status}`; continue;
+    }
     if (!r.ok) throw new Error("Gemini error: " + (j.error?.message || r.status));
     const text = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
     const s = text.indexOf("{"), e = text.lastIndexOf("}");
