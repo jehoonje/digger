@@ -47,9 +47,9 @@ button,input{font:inherit;color:inherit}
 .ghost{padding:13px;border:1px solid var(--line);background:transparent;border-radius:2px;cursor:pointer;text-align:center;font-weight:500}
 .ghost:hover{border-color:var(--fg)}
 .busy .actions{opacity:.4;pointer-events:none}
-.live{position:relative;width:100%;aspect-ratio:4/3;background:#000;overflow:hidden;border-radius:2px;margin-top:-16px}
+.live{position:relative;width:100%;aspect-ratio:1/1;background:#000;overflow:hidden;border-radius:2px;margin-top:-16px}
 .live video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-.live .guide{position:absolute;left:50%;top:50%;width:62%;aspect-ratio:1;transform:translate(-50%,-50%);border:1px solid rgba(255,255,255,.55);border-radius:2px;transition:border-color .3s}
+.live .guide{position:absolute;left:50%;top:50%;width:90%;aspect-ratio:1;transform:translate(-50%,-50%);border:1px solid rgba(255,255,255,.55);border-radius:2px;transition:border-color .3s}
 .live.steady .guide{border-color:#fff}
 .live .tag{position:absolute;left:10px;bottom:10px;max-width:calc(100% - 20px);padding:4px 8px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;border-radius:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .live.searching .tag::after{content:"";display:inline-block;width:6px;height:6px;margin-left:6px;border-radius:50%;background:#fff;animation:blink 1s infinite}
@@ -272,7 +272,7 @@ async function recognizeImage(image, live){
 // 32x32 흑백 미리보기로 움직임을 재서, 1.2초 정도 멈춰 있으면 한 번 인식.
 // 같은 장면은 다시 보내지 않고, 화면이 크게 바뀌어야 다음 인식을 함.
 const cam = { stream: null, timer: null, prev: null, sent: null, stableSince: 0, busy: false, wanted: true };
-const SAMPLE_MS = 250, STEADY_MS = 1200, MOVE_LIMIT = 7, DETAIL_MIN = 16, CHANGE_MIN = 16;
+const GUIDE = 0.9, SAMPLE_MS = 250, STEADY_MS = 1200, MOVE_LIMIT = 7, DETAIL_MIN = 16, CHANGE_MIN = 16;
 const tiny = document.createElement("canvas"); tiny.width = tiny.height = 32;
 const tctx = tiny.getContext("2d", { willReadFrequently: true });
 
@@ -282,7 +282,7 @@ function liveTag(t, cls){
 }
 function signature(){
   const v = $("video");
-  const side = Math.min(v.videoWidth, v.videoHeight) * 0.62; // 가이드 사각형 영역만
+  const side = Math.min(v.videoWidth, v.videoHeight) * GUIDE; // 가이드 사각형 영역만
   tctx.drawImage(v, (v.videoWidth - side) / 2, (v.videoHeight - side) / 2, side, side, 0, 0, 32, 32);
   const d = tctx.getImageData(0, 0, 32, 32).data, g = new Float32Array(1024);
   for (let i = 0; i < 1024; i++) g[i] = d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114;
@@ -291,12 +291,15 @@ function signature(){
 const diff = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
 const detail = a => { let m = 0; for (const x of a) m += x; m /= a.length; let v = 0; for (const x of a) v += (x - m) ** 2; return Math.sqrt(v / a.length); };
 
+// 가이드 사각형 + 약간의 여백만 잘라서 보냄 — 배경이 빠져 표지가 화면을 꽉 채움
 function frameBase64(){
-  const v = $("video"), s = Math.min(1, 1280 / Math.max(v.videoWidth, v.videoHeight));
+  const v = $("video");
+  const side = Math.min(v.videoWidth, v.videoHeight) * Math.min(1, GUIDE + 0.06);
+  const out = Math.min(1200, Math.round(side));
   const c = document.createElement("canvas");
-  c.width = Math.round(v.videoWidth * s); c.height = Math.round(v.videoHeight * s);
-  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
-  return c.toDataURL("image/jpeg", 0.85).split(",")[1];
+  c.width = c.height = out;
+  c.getContext("2d").drawImage(v, (v.videoWidth - side) / 2, (v.videoHeight - side) / 2, side, side, 0, 0, out, out);
+  return c.toDataURL("image/jpeg", 0.9).split(",")[1];
 }
 
 async function tick(){
@@ -322,7 +325,7 @@ async function startCamera(){
   if (cam.stream) return;
   if (!navigator.mediaDevices?.getUserMedia){ status("Live camera isn't supported in this browser. Use Upload."); return setLiveUI(false); }
   try {
-    cam.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false });
+    cam.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
     $("video").srcObject = cam.stream;
     await $("video").play().catch(() => {});
     cam.prev = null; cam.sent = null; cam.stableSince = performance.now();
