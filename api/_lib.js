@@ -9,8 +9,13 @@ const GEMINI_MODELS = () =>
   [process.env.GEMINI_MODEL, "gemini-3.8-flash", "gemini-3.6-flash", "gemini-flash-latest",
    "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"].filter(Boolean);
 
+// 앱스토어 앱은 누구나 써야 하므로 접속 코드 대신 앱 표시(User-Agent)로 통과.
+// 비용은 하루 검색 한도와 두 번째 코드가 막아 줌.
+export const isIosApp = req => process.env.ALLOW_IOS_APP === "1" && /DiggerIOS\//.test(req.headers["user-agent"] || "");
+
 export function checkAccess(req, res) {
   const code = process.env.ACCESS_CODE;
+  if (isIosApp(req)) return true;
   if (code && req.headers["x-access-code"] !== code) {
     res.status(401).json({ error: "Incorrect access code." });
     return false;

@@ -1,0 +1,16 @@
+{
+  "appId": "com.jehoonje.digger",
+  "appName": "Digger",
+  "webDir": "www",
+  "server": {
+    "url": "https://digger-eight.vercel.app",
+    "cleartext": false
+  },
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#fafaf9",
+    "allowsLinkPreview": false,
+    "scrollEnabled": true,
+    "appendUserAgent": "DiggerIOS/1.0"
+  }
+}
