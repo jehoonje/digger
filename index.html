@@ -47,6 +47,11 @@ button,input{font:inherit;color:inherit}
 .ghost{padding:13px;border:1px solid var(--line);background:transparent;border-radius:2px;cursor:pointer;text-align:center;font-weight:500}
 .ghost:hover{border-color:var(--fg)}
 .busy .actions{opacity:.4;pointer-events:none}
+.shot{display:flex;flex-direction:column;gap:8px;margin-top:-16px}
+.shot .view{position:relative;width:100%;height:0;padding-bottom:100%;background:#000;overflow:hidden;border-radius:2px}
+.shot .guide{position:absolute;left:50%;top:50%;width:90%;aspect-ratio:1;transform:translate(-50%,-50%);border:1px solid rgba(255,255,255,.6);border-radius:2px;pointer-events:none}
+.shot .row{display:grid;grid-template-columns:1fr 2fr;gap:8px}
+.player .unmute{position:absolute;right:10px;bottom:10px;padding:8px 12px;border:0;border-radius:2px;background:rgba(0,0,0,.7);color:#fff;font:500 13px var(--font);cursor:pointer;z-index:2}
 .status{margin:-16px 0 0;color:var(--muted);font-size:13px;min-height:1.5em}
 
 #secondForm{display:flex;flex-direction:column;gap:10px;padding:18px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
@@ -87,11 +92,18 @@ button,input{font:inherit;color:inherit}
     </div>
 
     <div class="actions">
-      <label class="ghost" for="cam">Take photo</label>
+      <button class="ghost" id="shotBtn" type="button">Take photo</button>
       <label class="ghost" for="upload">Upload</label>
     </div>
     <input id="cam" type="file" accept="image/*" capture="environment" hidden>
     <input id="upload" type="file" accept="image/*" hidden>
+    <div class="shot" id="shot" hidden>
+      <div class="view" id="shotView"><video id="video" playsinline muted autoplay></video><div class="guide"></div></div>
+      <div class="row">
+        <button class="ghost" id="shotCancel" type="button">Cancel</button>
+        <button class="primary" id="shotTake" type="button">Capture</button>
+      </div>
+    </div>
     <p class="status" id="status" role="status">Photograph a record sleeve.</p>
 
     <div id="secondSlot"></div>
@@ -118,6 +130,7 @@ button,input{font:inherit;color:inherit}
   </div>
 </section>
 
+<script src="https://www.youtube.com/iframe_api"></script>
 <script>
 const $ = id => document.getElementById(id);
 const store = {
@@ -229,11 +242,13 @@ function shrink(file){
 }
 
 async function recognize(file){
+  try { await recognizeImage(await shrink(file)); } catch (err){ status(err.message); }
+}
+async function recognizeImage(image){
   hideSecond();
   $("main").classList.add("busy");
   status("Searching…");
   try {
-    const image = await shrink(file);
     const j = await api("/api/recognize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ image }) });
     if (!j.found){ status("No match. Try a clearer, closer photo of the sleeve."); return; }
     showAlbum(j.album);
@@ -247,6 +262,56 @@ async function recognize(file){
   } catch (err){ status(err.message); }
   finally { $("main").classList.remove("busy"); }
 }
+
+/* ---------- In-page camera (no shutter sound) ---------- */
+// 휴대폰 기본 카메라 앱 대신 페이지 안에서 카메라 화면을 캡처 — 셔터음이 나지 않음
+let shotStream = null;
+function freshVideo(){
+  const v = document.createElement("video");
+  v.id = "video"; v.muted = true; v.autoplay = true; v.playsInline = true;
+  v.setAttribute("playsinline", ""); v.setAttribute("muted", "");
+  v.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:cover";
+  $("video").replaceWith(v);
+  return v;
+}
+async function openShot(){
+  primePlayer();
+  if (!navigator.mediaDevices?.getUserMedia){ $("cam").click(); return; } // 지원 안 되면 기본 카메라로
+  try {
+    shotStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
+    $("shot").hidden = false;
+    const v = freshVideo();
+    v.srcObject = shotStream;
+    await v.play().catch(() => {});
+  } catch (e){
+    closeShot();
+    if (e?.name === "NotAllowedError") status("Camera access was blocked. Allow it in your browser settings, or use Upload.");
+    else $("cam").click();
+  }
+}
+function closeShot(){
+  shotStream?.getTracks().forEach(t => t.stop()); shotStream = null;
+  $("video").srcObject = null;
+  $("shot").hidden = true;
+}
+function grabFrame(){
+  const v = $("video"), side = Math.min(v.videoWidth, v.videoHeight) * 0.96;
+  const out = Math.min(1200, Math.round(side));
+  const c = document.createElement("canvas"); c.width = c.height = out;
+  c.getContext("2d").drawImage(v, (v.videoWidth - side) / 2, (v.videoHeight - side) / 2, side, side, 0, 0, out, out);
+  return c.toDataURL("image/jpeg", 0.9).split(",")[1];
+}
+$("shotBtn").onclick = openShot;
+$("shotCancel").onclick = closeShot;
+$("shotTake").onclick = () => {
+  primePlayer();
+  if (!$("video").videoWidth) return;
+  const image = grabFrame();
+  closeShot();
+  recognizeImage(image);
+};
+$("upload").addEventListener("click", () => primePlayer());
+document.addEventListener("visibilitychange", () => { if (document.hidden && shotStream) closeShot(); });
 
 /* ---------- Result ---------- */
 function showAlbum(r){
@@ -270,7 +335,7 @@ function showAlbum(r){
 function showVideos(vids, label){
   [...$("tracks").querySelectorAll("button")].forEach(b => b.setAttribute("aria-current", String(b.dataset.label === label)));
   const box = $("related"); box.textContent = "";
-  if (!vids?.length){ $("player").textContent = ""; return; }
+  if (!vids?.length){ if (yt?.stopVideo) yt.stopVideo(); else $("player").textContent = ""; return; }
   vids.forEach((v, i) => {
     const b = document.createElement("button");
     b.type = "button"; b.textContent = v.title + " — " + v.channel;
@@ -281,10 +346,49 @@ function showVideos(vids, label){
   $("result").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+// 유튜브 플레이어 — 결과가 나오면 바로 재생. 브라우저가 소리 있는 자동재생을 막으면
+// 음소거로 재생하고 "Tap for sound" 버튼을 보여줌
+let yt = null, ytReady = false, pendingVideo = null, playStartedAt = 0;
+function primePlayer(){
+  if (yt || !window.YT?.Player) return;
+  const host = document.createElement("div"); host.id = "ytHost";
+  $("player").textContent = ""; $("player").append(host);
+  yt = new YT.Player("ytHost", {
+    width: "100%", height: "100%",
+    playerVars: { autoplay: 1, playsinline: 1, rel: 0 },
+    events: {
+      onReady: () => { ytReady = true; if (pendingVideo) { const v = pendingVideo; pendingVideo = null; startVideo(v); } },
+      onStateChange: e => { if (e.data === YT.PlayerState.PLAYING && !yt.isMuted()) hideUnmute(); }
+    }
+  });
+}
+function startVideo(v){
+  yt.unMute(); yt.loadVideoById(v.id);
+  playStartedAt = Date.now();
+  setTimeout(() => {
+    if (!yt || Date.now() - playStartedAt < 1400) return;
+    if (yt.getPlayerState() !== YT.PlayerState.PLAYING){ yt.mute(); yt.playVideo(); showUnmute(); }
+  }, 1500);
+}
+function showUnmute(){
+  if ($("unmute")) return;
+  const b = document.createElement("button");
+  b.id = "unmute"; b.className = "unmute"; b.type = "button"; b.textContent = "Tap for sound";
+  b.onclick = () => { yt.unMute(); yt.setVolume(100); yt.playVideo(); hideUnmute(); };
+  $("player").append(b);
+}
+function hideUnmute(){ $("unmute")?.remove(); }
+
 function play(v, btn){
-  $("player").innerHTML = '<iframe src="https://www.youtube.com/embed/' + encodeURIComponent(v.id) +
-    '?autoplay=1&playsinline=1&rel=0" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen title="YouTube player"></iframe>';
   [...$("related").children].forEach(b => b.setAttribute("aria-current", String(b === btn)));
+  hideUnmute();
+  if (!window.YT?.Player){ // API를 못 불러왔으면 예전 방식
+    $("player").innerHTML = '<iframe src="https://www.youtube.com/embed/' + encodeURIComponent(v.id) +
+      '?autoplay=1&playsinline=1&rel=0" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen title="YouTube player"></iframe>';
+    return;
+  }
+  primePlayer();
+  if (ytReady) startVideo(v); else pendingVideo = v;
 }
 </script>
 </body>
