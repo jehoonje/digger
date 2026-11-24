@@ -42,7 +42,7 @@ How to test:
 No sign-in is required. Native features: camera capture, photo library, haptic feedback on recognition, on-device recent scans.
 
 - 로그인 필요: 아니요 (데모 계정 칸 비움)
-- 연락처: 본인 이름 / 전화번호 / 이메일
+- 연락처: 본인 이름 / 전화번호 / limjhoon8@gmail.com
 
 ## 앱 개인정보 (App Privacy) 답안
 - 데이터 수집 여부: 예
